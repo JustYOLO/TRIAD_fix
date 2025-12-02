@@ -1,0 +1,4 @@
+*.d
+*.o
+db_bench
+make_config.mk

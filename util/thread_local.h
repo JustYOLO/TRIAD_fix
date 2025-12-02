@@ -10,15 +10,16 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 
-#include "util/autovector.h"
 #include "port/port.h"
+#include "util/autovector.h"
 
 #ifndef ROCKSDB_SUPPORT_THREAD_LOCAL
-#define ROCKSDB_SUPPORT_THREAD_LOCAL \
+#define ROCKSDB_SUPPORT_THREAD_LOCAL                                           \
   !defined(OS_WIN) && !defined(OS_MACOSX) && !defined(IOS_CROSS_COMPILE)
 #endif
 
@@ -28,7 +29,7 @@ namespace rocksdb {
 // pointer (if not NULL) when one of the following happens:
 // (1) a thread terminates
 // (2) a ThreadLocalPtr is destroyed
-typedef void (*UnrefHandler)(void* ptr);
+typedef void (*UnrefHandler)(void *ptr);
 
 // ThreadLocalPtr stores only values of pointer type.  Different from
 // the usual thread-local-storage, ThreadLocalPtr has the ability to
@@ -39,36 +40,36 @@ typedef void (*UnrefHandler)(void* ptr);
 // scope of DBImpl can avoid such confliction.  As a result, its memory
 // usage would be O(# of threads * # of ThreadLocalPtr instances).
 class ThreadLocalPtr {
- public:
+public:
   explicit ThreadLocalPtr(UnrefHandler handler = nullptr);
 
   ~ThreadLocalPtr();
 
   // Return the current pointer stored in thread local
-  void* Get() const;
+  void *Get() const;
 
   // Set a new pointer value to the thread local storage.
-  void Reset(void* ptr);
+  void Reset(void *ptr);
 
   // Atomically swap the supplied ptr and return the previous value
-  void* Swap(void* ptr);
+  void *Swap(void *ptr);
 
   // Atomically compare the stored value with expected. Set the new
   // pointer value to thread local only if the comparison is true.
   // Otherwise, expected returns the stored value.
   // Return true on success, false on failure
-  bool CompareAndSwap(void* ptr, void*& expected);
+  bool CompareAndSwap(void *ptr, void *&expected);
 
   // Reset all thread local data to replacement, and return non-nullptr
   // data for all existing threads
-  void Scrape(autovector<void*>* ptrs, void* const replacement);
+  void Scrape(autovector<void *> *ptrs, void *const replacement);
 
-  typedef std::function<void(void*, void*)> FoldFunc;
+  typedef std::function<void(void *, void *)> FoldFunc;
   // Update res by applying func on each thread-local value. Holds a lock that
   // prevents unref handler from running during this call, but clients must
   // still provide external synchronization since the owning thread can
   // access the values without internal locking, e.g., via Get() and Reset().
-  void Fold(FoldFunc func, void* res);
+  void Fold(FoldFunc func, void *res);
 
   // Initialize the static singletons of the ThreadLocalPtr.
   //
@@ -79,11 +80,11 @@ class ThreadLocalPtr {
   // initialized will be no-op.
   static void InitSingletons();
 
- protected:
+protected:
   struct Entry {
     Entry() : ptr(nullptr) {}
-    Entry(const Entry& e) : ptr(e.ptr.load(std::memory_order_relaxed)) {}
-    std::atomic<void*> ptr;
+    Entry(const Entry &e) : ptr(e.ptr.load(std::memory_order_relaxed)) {}
+    std::atomic<void *> ptr;
   };
 
   class StaticMeta;
@@ -104,15 +105,15 @@ class ThreadLocalPtr {
   //     | thread 3 |    void*   |    void*   |    void*   | <- ThreadData
   //     ---------------------------------------------------
   struct ThreadData {
-    explicit ThreadData(StaticMeta* _inst) : entries(), inst(_inst) {}
+    explicit ThreadData(StaticMeta *_inst) : entries(), inst(_inst) {}
     std::vector<Entry> entries;
-    ThreadData* next;
-    ThreadData* prev;
-    StaticMeta* inst;
+    ThreadData *next;
+    ThreadData *prev;
+    StaticMeta *inst;
   };
 
   class StaticMeta {
-   public:
+  public:
     StaticMeta();
 
     // Return the next available Id
@@ -124,22 +125,22 @@ class ThreadLocalPtr {
     void ReclaimId(uint32_t id);
 
     // Return the pointer value for the given id for the current thread.
-    void* Get(uint32_t id) const;
+    void *Get(uint32_t id) const;
     // Reset the pointer value for the given id for the current thread.
-    void Reset(uint32_t id, void* ptr);
+    void Reset(uint32_t id, void *ptr);
     // Atomically swap the supplied ptr and return the previous value
-    void* Swap(uint32_t id, void* ptr);
+    void *Swap(uint32_t id, void *ptr);
     // Atomically compare and swap the provided value only if it equals
     // to expected value.
-    bool CompareAndSwap(uint32_t id, void* ptr, void*& expected);
+    bool CompareAndSwap(uint32_t id, void *ptr, void *&expected);
     // Reset all thread local data to replacement, and return non-nullptr
     // data for all existing threads
-    void Scrape(uint32_t id, autovector<void*>* ptrs, void* const replacement);
+    void Scrape(uint32_t id, autovector<void *> *ptrs, void *const replacement);
     // Update res by applying func on each thread-local value. Holds a lock that
     // prevents unref handler from running during this call, but clients must
     // still provide external synchronization since the owning thread can
     // access the values without internal locking, e.g., via Get() and Reset().
-    void Fold(uint32_t id, FoldFunc func, void* res);
+    void Fold(uint32_t id, FoldFunc func, void *res);
 
     // Register the UnrefHandler for id
     void SetHandler(uint32_t id, UnrefHandler handler);
@@ -161,31 +162,31 @@ class ThreadLocalPtr {
     // variable.  We place a dummy function call of this inside
     // Env::Default() to ensure the construction order of the construction
     // order.
-    static port::Mutex* Mutex();
+    static port::Mutex *Mutex();
 
     // Returns the member mutex of the current StaticMeta.  In general,
     // Mutex() should be used instead of this one.  However, in case where
     // the static variable inside Instance() goes out of scope, MemberMutex()
     // should be used.  One example is OnThreadExit() function.
-    port::Mutex* MemberMutex() { return &mutex_; }
+    port::Mutex *MemberMutex() { return &mutex_; }
 
-   private:
+  private:
     // Get UnrefHandler for id with acquiring mutex
     // REQUIRES: mutex locked
     UnrefHandler GetHandler(uint32_t id);
 
     // Triggered before a thread terminates
-    static void OnThreadExit(void* ptr);
+    static void OnThreadExit(void *ptr);
 
     // Add current thread's ThreadData to the global chain
     // REQUIRES: mutex locked
-    void AddThreadData(ThreadData* d);
+    void AddThreadData(ThreadData *d);
 
     // Remove current thread's ThreadData from the global chain
     // REQUIRES: mutex locked
-    void RemoveThreadData(ThreadData* d);
+    void RemoveThreadData(ThreadData *d);
 
-    static ThreadData* GetThreadLocal();
+    static ThreadData *GetThreadLocal();
 
     uint32_t next_instance_id_;
     // Used to recycle Ids in case ThreadLocalPtr is instantiated and destroyed
@@ -204,7 +205,7 @@ class ThreadLocalPtr {
     port::Mutex mutex_;
 #if ROCKSDB_SUPPORT_THREAD_LOCAL
     // Thread local storage
-    static __thread ThreadData* tls_;
+    static __thread ThreadData *tls_;
 #endif
 
     // Used to make thread exit trigger possible if !defined(OS_MACOSX).
@@ -212,9 +213,9 @@ class ThreadLocalPtr {
     pthread_key_t pthread_key_;
   };
 
-  static StaticMeta* Instance();
+  static StaticMeta *Instance();
 
   const uint32_t id_;
 };
 
-}  // namespace rocksdb
+} // namespace rocksdb
