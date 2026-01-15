@@ -89,6 +89,7 @@ ImmutableDBOptions::ImmutableDBOptions(const DBOptions& options)
 #endif  // ROCKSDB_LITE
       fail_if_options_file_error(options.fail_if_options_file_error),
       dump_malloc_stats(options.dump_malloc_stats),
+      enable_compaction_garbage_logging(options.enable_compaction_garbage_logging),
       avoid_flush_during_recovery(options.avoid_flush_during_recovery) {
 }
 
@@ -219,6 +220,8 @@ void ImmutableDBOptions::Dump(Logger* log) const {
   Header(log, "                             Options.wal_filter: %s",
          wal_filter ? wal_filter->Name() : "None");
 #endif  // ROCKDB_LITE
+  Header(log, "     Options.enable_compaction_garbage_logging: %d",
+         enable_compaction_garbage_logging);
   Header(log, "            Options.avoid_flush_during_recovery: %d",
          avoid_flush_during_recovery);
 }

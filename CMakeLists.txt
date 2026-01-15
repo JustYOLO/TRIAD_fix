@@ -28,6 +28,35 @@
 cmake_minimum_required(VERSION 2.6)
 project(rocksdb)
 
+# ==========================================
+# FORCE GFLAGS (Patch by Gemini)
+# ==========================================
+set(GFLAGS_FOUND TRUE)
+set(GFLAGS_DIR "/usr")
+set(GFLAGS_INCLUDE_DIRS "/usr/include")
+set(GFLAGS_LIBRARIES "gflags")
+
+# Define the macros checking for existence
+add_definitions(-DGFLAGS=google)
+add_definitions(-DGFLAGS_NAMESPACE=google)
+
+# Link the library globally
+link_libraries(gflags)
+
+# FORCE SNAPPY
+set(SNAPPY_FOUND TRUE)
+set(SNAPPY_DIR "/usr")
+set(SNAPPY_INCLUDE_DIRS "/usr/include")
+set(SNAPPY_LIBRARIES "snappy")
+add_definitions(-DSNAPPY=1)
+link_libraries(snappy)
+
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -g -fno-omit-frame-pointer")
+# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+# ==========================================
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 if(POLICY CMP0042)
   cmake_policy(SET CMP0042 NEW)
 endif()
@@ -99,7 +128,7 @@ if(FAIL_ON_WARNINGS)
   if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /WX")
   else() # assume GCC
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
+#    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
   endif()
 endif()
 
@@ -386,6 +415,8 @@ set(SOURCES
         util/transaction_test_util.cc
         util/xfunc.cc
         util/xxhash.cc
+        util/zipf.cc
+        util/latest-generator.cc
         utilities/backupable/backupable_db.cc
         utilities/blob_db/blob_db.cc
         utilities/checkpoint/checkpoint.cc

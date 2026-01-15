@@ -570,11 +570,75 @@ Status CompactionJob::Run() {
   AggregateStatistics();
   UpdateCompactionStats();
   RecordCompactionIOStats();
+  LogCompactionGarbageStats();
   LogFlush(db_options_.info_log);
   TEST_SYNC_POINT("CompactionJob::Run():End");
 
   compact_->status = status;
   return status;
+}
+
+void CompactionJob::AddDuplicateKeyEntries(uint64_t entries) {
+  if (entries == 0) {
+    return;
+  }
+  MutexLock l(&duplicate_key_entries_mutex_);
+  duplicate_key_entries_ += entries;
+}
+
+void CompactionJob::AddCompactionInputRecords(uint64_t records) {
+  if (records == 0) {
+    return;
+  }
+  MutexLock l(&duplicate_key_entries_mutex_);
+  compaction_input_records_ += records;
+}
+
+void CompactionJob::LogCompactionGarbageStats() {
+  if (!db_options_.enable_compaction_garbage_logging) {
+    return;
+  }
+  if (db_options_.info_log == nullptr ||
+      db_options_.info_log_level > InfoLogLevel::INFO_LEVEL) {
+    return;
+  }
+
+  uint64_t total_input = 0;
+  uint64_t garbage_entries = 0;
+  {
+    MutexLock l(&duplicate_key_entries_mutex_);
+    total_input = compaction_input_records_ > 0 ? compaction_input_records_
+                                                : compact_->num_input_records;
+    garbage_entries = duplicate_key_entries_;
+  }
+  if (total_input == 0) {
+    return;
+  }
+
+  double garbage_pct =
+      total_input > 0
+          ? (static_cast<double>(garbage_entries) /
+             static_cast<double>(total_input)) *
+                100.0
+          : 0.0;
+
+  Compaction* compaction = compact_->compaction;
+  ColumnFamilyData* cfd = compaction->column_family_data();
+  SequenceNumber seqno = kMaxSequenceNumber;
+  if (versions_ != nullptr) {
+    seqno = versions_->LastSequence();
+  }
+
+  Compaction::InputLevelSummaryBuffer inputs_summary;
+  std::string level_summary = compaction->InputLevelSummary(&inputs_summary);
+  level_summary.append(" -> L");
+  level_summary.append(std::to_string(compaction->output_level()));
+
+  Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log.get(),
+      "[%s] [JOB %d] [SEQ %" PRIu64 "] Compaction garbage (duplicate-only): %"
+      PRIu64 "/%" PRIu64 " (%.2f%%) [%s]",
+      cfd->GetName().c_str(), job_id_, seqno, garbage_entries, total_input,
+      garbage_pct, level_summary.c_str());
 }
 
 Status CompactionJob::Install(const MutableCFOptions& mutable_cf_options) {
@@ -871,6 +935,9 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       }
     }
   }
+
+  AddDuplicateKeyEntries(c_iter->GetDuplicateKeyEntries());
+  AddCompactionInputRecords(c_iter_stats.num_input_records);
 
   sub_compact->num_input_records = c_iter_stats.num_input_records;
   sub_compact->compaction_job_stats.num_input_deletion_records =

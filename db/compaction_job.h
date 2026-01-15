@@ -114,6 +114,9 @@ class CompactionJob {
       int* num_files, uint64_t* bytes_read, int input_level);
 
   void LogCompaction();
+  void AddDuplicateKeyEntries(uint64_t entries);
+  void AddCompactionInputRecords(uint64_t records);
+  void LogCompactionGarbageStats();
 
   int job_id_;
 
@@ -155,6 +158,9 @@ class CompactionJob {
   bool bottommost_level_;
   bool paranoid_file_checks_;
   bool measure_io_stats_;
+  uint64_t duplicate_key_entries_ = 0;
+  uint64_t compaction_input_records_ = 0;
+  port::Mutex duplicate_key_entries_mutex_;
   // Stores the Slices that designate the boundaries for each subcompaction
   std::vector<Slice> boundaries_;
   // Stores the approx size of keys covered in the range of each subcompaction

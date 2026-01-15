@@ -11,25 +11,20 @@
 namespace rocksdb {
 
 CompactionIterator::CompactionIterator(
-    InternalIterator* input, const Comparator* cmp, MergeHelper* merge_helper,
-    SequenceNumber last_sequence, std::vector<SequenceNumber>* snapshots,
-    SequenceNumber earliest_write_conflict_snapshot, Env* env,
-    bool expect_valid_internal_key, RangeDelAggregator* range_del_agg,
-    const Compaction* compaction, const CompactionFilter* compaction_filter,
-    LogBuffer* log_buffer, const EnvOptions* env_options, const std::string* dbname)
-    : input_(input),
-      cmp_(cmp),
-      merge_helper_(merge_helper),
+    InternalIterator *input, const Comparator *cmp, MergeHelper *merge_helper,
+    SequenceNumber last_sequence, std::vector<SequenceNumber> *snapshots,
+    SequenceNumber earliest_write_conflict_snapshot, Env *env,
+    bool expect_valid_internal_key, RangeDelAggregator *range_del_agg,
+    const Compaction *compaction, const CompactionFilter *compaction_filter,
+    LogBuffer *log_buffer, const EnvOptions *env_options,
+    const std::string *dbname)
+    : input_(input), cmp_(cmp), merge_helper_(merge_helper),
       snapshots_(snapshots),
       earliest_write_conflict_snapshot_(earliest_write_conflict_snapshot),
-      env_(env),
-      expect_valid_internal_key_(expect_valid_internal_key),
-      range_del_agg_(range_del_agg),
-      compaction_(compaction),
-      compaction_filter_(compaction_filter),
-      log_buffer_(log_buffer),
-      merge_out_iter_(merge_helper_),
-      env_options_(env_options) { //HUAPENG
+      env_(env), expect_valid_internal_key_(expect_valid_internal_key),
+      range_del_agg_(range_del_agg), compaction_(compaction),
+      compaction_filter_(compaction_filter), log_buffer_(log_buffer),
+      merge_out_iter_(merge_helper_), env_options_(env_options) { // HUAPENG
   assert(compaction_filter_ == nullptr || compaction_ != nullptr);
   bottommost_level_ =
       compaction_ == nullptr ? false : compaction_->bottommost_level();
@@ -54,11 +49,11 @@ CompactionIterator::CompactionIterator(
   }
   input_->SetPinnedItersMgr(&pinned_iters_mgr_);
 
-  //HUAPENG
+  // HUAPENG
   if (dbname) {
     env_->GetAbsolutePath(*dbname, &absolute_path_);
   }
-  //END HUAPENG
+  // END HUAPENG
 }
 
 CompactionIterator::~CompactionIterator() {
@@ -70,6 +65,16 @@ void CompactionIterator::ResetRecordCounts() {
   iter_stats_.num_record_drop_user = 0;
   iter_stats_.num_record_drop_hidden = 0;
   iter_stats_.num_record_drop_obsolete = 0;
+}
+
+uint64_t CompactionIterator::GetDuplicateKeyEntries() {
+  if (!duplicate_key_entries_finalized_) {
+    if (has_current_user_key_ && current_user_key_count_ > 1) {
+      duplicate_key_entries_ += (current_user_key_count_ - 1);
+    }
+    duplicate_key_entries_finalized_ = true;
+  }
+  return duplicate_key_entries_;
 }
 
 void CompactionIterator::SeekToFirst() {
@@ -130,15 +135,15 @@ void CompactionIterator::NextFromInput() {
     key_ = input_->key();
     value_ = input_->value();
 
-    //HUAPENG
+    // HUAPENG
     level_ = input_->level();
     if (value_.size() == 18 && env_options_) {
       int32_t offset = DecodeFixed32(value_.data());
       int32_t len = DecodeFixed32(value_.data() + 4);
       std::string fn(value_.data() + 8, len);
-      //fn = "/home/nutanix/data/stargate-storage/disks/BTHC520303PX480MGN/test/" + fn;
+      //fn = "/home/nutanix/data/stargate-storage/disks/BTHC520303PX480MGN/test/" + fn; 
       fn = absolute_path_ + "/" + fn;
-
+    
       if (log_name_reader_map_.count(fn) == 0) {
         std::unique_ptr<RandomAccessFile> file;
         Status s = env_->NewRandomAccessFile(fn, &file, *env_options_);
@@ -149,9 +154,10 @@ void CompactionIterator::NextFromInput() {
             new RandomAccessFileReader(std::move(file)));
         log_name_reader_map_[fn] = file_reader;
       }
-
-      std::shared_ptr<RandomAccessFileReader>& file_reader = log_name_reader_map_[fn];
-
+    
+      std::shared_ptr<RandomAccessFileReader>& file_reader =
+      log_name_reader_map_[fn];
+    
       //char *buf = new char[512];
       Slice result;
       Status s = file_reader->Read(offset, 512, &result, buf);
@@ -168,9 +174,7 @@ void CompactionIterator::NextFromInput() {
       value_ = result;
     }
 
-    //END HUAPENG
-
-
+    // END HUAPENG
 
     iter_stats_.num_input_records++;
 
@@ -204,6 +208,10 @@ void CompactionIterator::NextFromInput() {
     // compaction filter). ikey_.user_key is pointing to the copy.
     if (!has_current_user_key_ ||
         !cmp_->Equal(ikey_.user_key, current_user_key_)) {
+      if (has_current_user_key_ && current_user_key_count_ > 1) {
+        duplicate_key_entries_ += (current_user_key_count_ - 1);
+      }
+      current_user_key_count_ = 1;
       // First occurrence of this user key
       // Copy key for output
       key_ = current_key_.SetKey(key_, &ikey_);
@@ -244,6 +252,7 @@ void CompactionIterator::NextFromInput() {
         }
       }
     } else {
+      current_user_key_count_++;
       // Update the current key to reflect the new sequence number/type without
       // copying the user key.
       // TODO(rven): Compaction filter does not process keys in this path
@@ -261,7 +270,7 @@ void CompactionIterator::NextFromInput() {
         current_user_key_sequence_;
     current_user_key_sequence_ = ikey_.sequence;
     SequenceNumber last_snapshot = current_user_key_snapshot_;
-    SequenceNumber prev_snapshot = 0;  // 0 means no previous snapshot
+    SequenceNumber prev_snapshot = 0; // 0 means no previous snapshot
     current_user_key_snapshot_ =
         visible_at_tip_
             ? earliest_snapshot_
@@ -408,7 +417,7 @@ void CompactionIterator::NextFromInput() {
       // checking since there has already been a record returned for this key
       // in this snapshot.
       assert(last_sequence >= current_user_key_sequence_);
-      ++iter_stats_.num_record_drop_hidden;  // (A)
+      ++iter_stats_.num_record_drop_hidden; // (A)
       input_->Next();
     } else if (compaction_ != nullptr && ikey_.type == kTypeDeletion &&
                ikey_.sequence <= earliest_snapshot_ &&
@@ -431,9 +440,9 @@ void CompactionIterator::NextFromInput() {
       ++iter_stats_.num_record_drop_obsolete;
       input_->Next();
     } else if (ikey_.type == kTypeMerge) {
-      //HUAPENG
+      // HUAPENG
       exit(-1);
-      //END HUAPENG
+      // END HUAPENG
       if (!merge_helper_->HasOperator()) {
         LogToBuffer(log_buffer_, "Options::merge_operator is null.");
         status_ = Status::InvalidArgument(
@@ -504,8 +513,9 @@ void CompactionIterator::PrepareOutput() {
   }
 }
 
-inline SequenceNumber CompactionIterator::findEarliestVisibleSnapshot(
-    SequenceNumber in, SequenceNumber* prev_snapshot) {
+inline SequenceNumber
+CompactionIterator::findEarliestVisibleSnapshot(SequenceNumber in,
+                                                SequenceNumber *prev_snapshot) {
   assert(snapshots_->size());
   SequenceNumber prev __attribute__((__unused__)) = kMaxSequenceNumber;
   for (const auto cur : *snapshots_) {
@@ -521,4 +531,4 @@ inline SequenceNumber CompactionIterator::findEarliestVisibleSnapshot(
   return kMaxSequenceNumber;
 }
 
-}  // namespace rocksdb
+} // namespace rocksdb

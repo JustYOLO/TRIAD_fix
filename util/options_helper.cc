@@ -116,6 +116,8 @@ DBOptions BuildDBOptions(const ImmutableDBOptions& immutable_db_options,
   options.fail_if_options_file_error =
       immutable_db_options.fail_if_options_file_error;
   options.dump_malloc_stats = immutable_db_options.dump_malloc_stats;
+  options.enable_compaction_garbage_logging =
+      immutable_db_options.enable_compaction_garbage_logging;
   options.avoid_flush_during_recovery =
       immutable_db_options.avoid_flush_during_recovery;
 

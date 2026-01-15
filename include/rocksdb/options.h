@@ -1346,6 +1346,10 @@ struct DBOptions {
   // DEFAULT: false
   bool dump_malloc_stats;
 
+  // If true, log compaction garbage percentage to the DB LOG.
+  // DEFAULT: false
+  bool enable_compaction_garbage_logging;
+
   // By default RocksDB replay WAL logs and flush them on DB open, which may
   // create very small SST files. If this option is enabled, RocksDB will try
   // to avoid (but not guarantee not to) flush during recovery. Also, existing

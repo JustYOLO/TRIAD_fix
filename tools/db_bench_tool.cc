@@ -59,6 +59,8 @@
 #include "util/compression.h"
 #include "util/crc32c.h"
 #include "util/histogram.h"
+#include "util/latest-generator.h"
+#include "util/logging.h"
 #include "util/mutexlock.h"
 #include "util/random.h"
 #include "util/statistics.h"
@@ -66,6 +68,7 @@
 #include "util/testutil.h"
 #include "util/transaction_test_util.h"
 #include "util/xxhash.h"
+#include "util/zipf.h"
 #include "utilities/blob_db/blob_db.h"
 #include "utilities/merge_operators.h"
 
@@ -241,6 +244,9 @@ DEFINE_bool(reverse_iterator, false,
             "Seek and then Next");
 
 DEFINE_bool(use_uint64_comparator, false, "use Uint64 user comparator");
+
+DEFINE_bool(YCSB_uniform_distribution, false,
+            "Uniform key distribution for YCSB");
 
 DEFINE_int64(batch_size, 1, "Batch size");
 
@@ -712,6 +718,8 @@ DEFINE_int64(report_interval_seconds, 0,
 DEFINE_string(report_file, "report.csv",
               "Filename where some simple stats are reported to (if "
               "--report_interval_seconds is bigger than 0)");
+DEFINE_bool(report_interval_to_stderr, false,
+            "Also print interval throughput to stderr");
 
 DEFINE_int32(thread_status_per_interval, 0,
              "Takes and report a snapshot of the current status of each thread"
@@ -876,6 +884,8 @@ DEFINE_bool(identity_as_first_hash, false,
             "table becomes an identity function. This is only valid when key "
             "is 8 bytes");
 DEFINE_bool(dump_malloc_stats, true, "Dump malloc stats in LOG ");
+DEFINE_bool(compaction_garbage_logging, false,
+            "If true, log compaction garbage percentage to the DB LOG.");
 
 enum RepFactory {
   kSkipList,
@@ -931,6 +941,17 @@ DEFINE_int32(skip_list_lookahead, 0,
 DEFINE_bool(report_file_operations, false,
             "if report number of file "
             "operations");
+DEFINE_double(zipf_const, 0.99, "Zipfian constant for Zipf distribution");
+
+DEFINE_int64(key_range, 10000000, "zipf key range");
+struct BenchmarkParams {
+  double zipf_const;
+  int64_t key_range;
+  bool memDist;
+  // you can add more benchmark‐only flags here in future
+};
+
+static BenchmarkParams bench_params;
 
 static const bool FLAGS_soft_rate_limit_dummy __attribute__((unused)) =
     RegisterFlagValidator(&FLAGS_soft_rate_limit, &ValidateRateLimit);
@@ -1216,9 +1237,10 @@ struct DBWithColumnFamilies {
 class ReporterAgent {
 public:
   ReporterAgent(Env *env, const std::string &fname,
-                uint64_t report_interval_secs)
+                uint64_t report_interval_secs, Logger* info_log)
       : env_(env), total_ops_done_(0), last_report_(0),
-        report_interval_secs_(report_interval_secs), stop_(false) {
+        report_interval_secs_(report_interval_secs), stop_(false),
+        info_log_(info_log) {
     auto s = env_->NewWritableFile(fname, &report_file_, EnvOptions());
     if (s.ok()) {
       s = report_file_->Append(Header() + "\n");
@@ -1270,9 +1292,20 @@ private:
       auto secs_elapsed =
           (env_->NowMicros() - time_started + kMicrosInSecond / 2) /
           kMicrosInSecond;
-      std::string report = ToString(secs_elapsed) + "," +
-                           ToString(total_ops_done_snapshot - last_report_) +
-                           "\n";
+      int64_t interval_qps = total_ops_done_snapshot - last_report_;
+      std::string report =
+          ToString(secs_elapsed) + "," + ToString(interval_qps) + "\n";
+      if (info_log_ != nullptr) {
+        Log(InfoLogLevel::INFO_LEVEL, info_log_,
+            "db_bench interval_qps=%" PRIi64 " elapsed_secs=%" PRIu64,
+            interval_qps, secs_elapsed);
+      }
+      if (FLAGS_report_interval_to_stderr) {
+        uint64_t now_micros = env_->NowMicros();
+        fprintf(stderr, "%s interval_qps=%" PRIi64 "\n",
+                env_->TimeToString(now_micros / 1000000).c_str(),
+                interval_qps);
+      }
       auto s = report_file_->Append(report);
       if (s.ok()) {
         s = report_file_->Flush();
@@ -1297,6 +1330,7 @@ private:
   // will notify on stop
   std::condition_variable stop_cv_;
   bool stop_;
+  Logger* info_log_;
 };
 
 enum OperationType : unsigned char {
@@ -2394,6 +2428,8 @@ public:
       } else if (name == "randomreplacekeys") {
         fresh_db = true;
         method = &Benchmark::RandomReplaceKeys;
+      } else if (name == "fillzip") {
+        method = &Benchmark::YCSBWorkloadW;
       } else if (name == "timeseries") {
         timestamp_emulator_.reset(new TimestampEmulator());
         if (FLAGS_expire_style == "compaction_filter") {
@@ -2527,8 +2563,13 @@ private:
 
     std::unique_ptr<ReporterAgent> reporter_agent;
     if (FLAGS_report_interval_seconds > 0) {
+      Logger* info_log = nullptr;
+      if (db_.db != nullptr) {
+        info_log = db_.db->GetDBOptions().info_log.get();
+      }
       reporter_agent.reset(new ReporterAgent(FLAGS_env, FLAGS_report_file,
-                                             FLAGS_report_interval_seconds));
+                                             FLAGS_report_interval_seconds,
+                                             info_log));
     }
 
     ThreadArg *arg = new ThreadArg[n];
@@ -3041,6 +3082,8 @@ private:
     options.wal_dir = FLAGS_wal_dir;
     options.create_if_missing = !FLAGS_use_existing_db;
     options.dump_malloc_stats = FLAGS_dump_malloc_stats;
+    options.enable_compaction_garbage_logging =
+        FLAGS_compaction_garbage_logging;
 
     if (FLAGS_row_cache_size) {
       if (FLAGS_cache_numshardbits >= 1) {
@@ -4560,6 +4603,61 @@ private:
       assert(iter->Valid() && iter->key() == key);
       thread->stats.FinishedOps(nullptr, db, 1, kSeek);
     }
+  }
+  void YCSBWorkloadW(ThreadState *thread) {
+    ReadOptions options(FLAGS_verify_checksum, true);
+    RandomGenerator gen;
+    init_zipf_generator(0, FLAGS_key_range, bench_params.zipf_const);
+
+    std::string value;
+    int64_t writes_done = 0;
+    int64_t nums = FLAGS_num;
+    Duration duration(FLAGS_duration, 0);
+
+    std::unique_ptr<const char[]> key_guard;
+    Slice key = AllocateKey(&key_guard);
+
+    if (FLAGS_benchmark_write_rate_limit > 0) {
+      printf(">>>> FLAGS_benchmark_write_rate_limit YCSBA \n");
+      thread->shared->write_rate_limiter.reset(
+          NewGenericRateLimiter(FLAGS_benchmark_write_rate_limit));
+    }
+
+    // 전체 작업은 쓰기 작업만 수행
+    while (nums > 0) {
+      nums--;
+      DB *db = SelectDB(thread);
+
+      long k;
+      if (FLAGS_YCSB_uniform_distribution) {
+        // 균등 분포에서 번호 생성
+        k = thread->rand.Next() % FLAGS_num;
+      } else {
+        // zipf 분포에서 번호 생성
+        k = nextValue() % FLAGS_key_range;
+      }
+      GenerateKeyFromInt(k, FLAGS_key_range, &key);
+
+      // 쓰기 작업 수행
+      // if (FLAGS_benchmark_write_rate_limit > 0) {
+      //   thread->shared->write_rate_limiter->Request(
+      //       value_size_ + key_size_, Env::IO_HIGH, nullptr /* stats */,
+      //       RateLimiter::OpType::kWrite);
+      //   thread->stats.ResetLastOpTime();
+      // }
+      Status s = db->Put(write_options_, key, gen.Generate(value_size_));
+      if (!s.ok()) {
+        // fprintf(stderr, "put error: %s\n", s.ToString().c_str());
+        // exit(1);
+      } else {
+        writes_done++;
+        thread->stats.FinishedOps(nullptr, db, 1, kWrite);
+      }
+    }
+    char msg[100];
+    snprintf(msg, sizeof(msg), "( writes:%" PRIu64 " total:%" PRIu64 ")",
+             writes_done, readwrites_);
+    thread->stats.AddMessage(msg);
   }
 
 #ifndef ROCKSDB_LITE

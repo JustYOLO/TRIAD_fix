@@ -78,6 +78,7 @@ class CompactionIterator {
   bool Valid() const { return valid_; }
   const Slice& user_key() const { return current_user_key_; }
   const CompactionIteratorStats& iter_stats() const { return iter_stats_; }
+  uint64_t GetDuplicateKeyEntries();
 
  private:
   // Processes the input stream to find the next output
@@ -164,6 +165,9 @@ class CompactionIterator {
   // is in or beyond the last file checked during the previous call
   std::vector<size_t> level_ptrs_;
   CompactionIteratorStats iter_stats_;
+  uint64_t current_user_key_count_ = 0;
+  uint64_t duplicate_key_entries_ = 0;
+  bool duplicate_key_entries_finalized_ = false;
 
   //HUAPENG
   const EnvOptions* env_options_;

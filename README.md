@@ -1,3 +1,5 @@
+DISABLE_JEMALLOC=1 make db_bench -j12 EXTRA_CXXFLAGS="-fsanitize=address -g -fno-omit-frame-pointer" EXTRA_LDFLAGS="-fsanitize=address"
+
 
 ## TRIAD
 

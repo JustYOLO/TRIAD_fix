@@ -82,6 +82,7 @@ struct ImmutableDBOptions {
 #endif  // ROCKSDB_LITE
   bool fail_if_options_file_error;
   bool dump_malloc_stats;
+  bool enable_compaction_garbage_logging;
   bool avoid_flush_during_recovery;
 };
 

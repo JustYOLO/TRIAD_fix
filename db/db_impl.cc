@@ -4635,7 +4635,9 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
 
   StopWatch write_sw(env_, immutable_db_options_.statistics.get(), DB_WRITE);
 
+  // lee: every write should enter write queue while using write_thread_.JoinBatchGroup().
   write_thread_.JoinBatchGroup(&w);
+
   if (w.state == WriteThread::STATE_PARALLEL_FOLLOWER) {
     // we are a non-leader in a parallel group
     PERF_TIMER_GUARD(write_memtable_time);
@@ -4678,6 +4680,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
   assert(w.state == WriteThread::STATE_GROUP_LEADER);
 
   WriteContext context;
+  // lee: one writer becomes the group leader and takes mutex_
   mutex_.Lock();
 
   if (!write_options.disableWAL) {
@@ -4806,6 +4809,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
   }
 
   mutex_.Unlock();
+  // lee: mutex_ is unlocked here
 
   // At this point the mutex is unlocked
 
